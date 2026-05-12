@@ -1,12 +1,16 @@
 pipeline {
-     agent {
+
+    agent {
         label 'node'
     }
 
     stages {
+
         stage('Checkout Code') {
             steps {
-                git branch: 'main', credentialsId: 'GitHub', url: 'https://github.com/surajjp7/amazon-app.git'
+                git branch: 'main',
+                credentialsId: 'GitHub',
+                url: 'https://github.com/surajjp7/amazon-app.git'
             }
         }
 
@@ -15,11 +19,13 @@ pipeline {
                 sh 'mvn clean package -DskipTests'
             }
         }
-
-        stage('Test') {
+        
+        stage('Archive WAR Artifact') {
             steps {
-                sh 'mvn test'
+                archiveArtifacts artifacts: 'target/*.war',
+                fingerprint: true
             }
         }
     }
 }
+
