@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+    agent Docker-Agent
 
     stages {
         stage('Checkout Code') {
