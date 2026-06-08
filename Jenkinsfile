@@ -1,119 +1,98 @@
 pipeline {
-    agent none
+    agent any
 
     environment {
-        APP_NAME = "amazon-app"
         IMAGE_NAME = "amazon-app"
-        IMAGE_TAG = "${BUILD_NUMBER}"
+        IMAGE_TAG  = "${BUILD_NUMBER}"
 
         WAR_FILE = "Amazon-Web/target/Amazon.war"
-        ARTIFACT_NAME = "Amazon-${BUILD_NUMBER}.war"
-
-        JFROG_URL = "http://192.168.116.128:8082/artifactory"
-        JFROG_REPO = "maven-local"
+        JFROG_URL = "http://localhost:8082/artifactory"
+        JFROG_REPO = "libs-snapshot-local"
     }
 
     stages {
-
-        stage('Checkout') {
-            agent any
+        stage('Checkout Code') {
             steps {
                 git branch: 'main',
                     url: 'https://github.com/surajjp7/amazon-app.git'
             }
         }
 
-        stage('Build WAR using Docker Container Slave') {
-            agent {
-                docker {
-                    image 'maven:3.9.6-eclipse-temurin-17'
-                    args '-u root'
-                }
-            }
+        stage('Build WAR inside Docker Container') {
             steps {
                 sh '''
-                    echo "Building Maven WAR inside Docker container slave"
+                    docker run --rm \
+                    -v $WORKSPACE:/app \
+                    -w /app \
+                    maven:3.9.6-eclipse-temurin-17 \
                     mvn clean package
-                    ls -lh Amazon-Web/target/
                 '''
-
-                stash name: 'source-code', includes: '**/*'
-                stash name: 'war-file', includes: 'Amazon-Web/target/Amazon.war'
             }
         }
 
-        stage('Upload WAR Artifact to JFrog') {
-            agent any
+        stage('Upload WAR to JFrog') {
             steps {
-                unstash 'war-file'
-
                 withCredentials([usernamePassword(
-                    credentialsId: 'jfrog-creds',
+                    credentialsId: 'Jfrog-Artifactory',
                     usernameVariable: 'JFROG_USER',
                     passwordVariable: 'JFROG_PASS'
                 )]) {
                     sh '''
-                        echo "Uploading WAR artifact to JFrog"
                         curl -u $JFROG_USER:$JFROG_PASS \
                         -T ${WAR_FILE} \
-                        ${JFROG_URL}/${JFROG_REPO}/${ARTIFACT_NAME}
+                        ${JFROG_URL}/${JFROG_REPO}/Amazon-${BUILD_NUMBER}.war
                     '''
                 }
             }
         }
 
-        stage('Build Docker Image Locally') {
-            agent any
+        stage('Build Docker Image') {
             steps {
-                unstash 'source-code'
-
                 sh '''
-                    echo "Building Docker image locally on Ubuntu VM"
                     docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
                     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
-                    docker images | grep ${IMAGE_NAME}
                 '''
             }
         }
 
-        stage('Load Docker Image into Minikube') {
-            agent any
+        stage('Docker Login') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'Docker',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh '''
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Load Image into Minikube') {
             steps {
                 sh '''
-                    echo "Loading Docker image into Minikube"
                     minikube image load ${IMAGE_NAME}:${IMAGE_TAG}
                     minikube image load ${IMAGE_NAME}:latest
                 '''
             }
         }
 
-        stage('Deploy using Kubernetes Plugin Pod') {
-            agent {
-                kubernetes {
-                    cloud 'kubernetes'
-                    yaml '''
-apiVersion: v1
-kind: Pod
-spec:
-  serviceAccountName: jenkins
-  containers:
-  - name: kubectl
-    image: bitnami/kubectl:latest
-    command:
-    - cat
-    tty: true
-'''
-                }
-            }
+        stage('Deploy to Kubernetes') {
             steps {
-                container('kubectl') {
-                    unstash 'source-code'
-
+                withCredentials([file(
+                    credentialsId: 'k8s-token',
+                    variable: 'KUBECONFIG_FILE'
+                )]) {
                     sh '''
-                        echo "Deploying application to Kubernetes"
+                        export KUBECONFIG=$KUBECONFIG_FILE
+
                         kubectl apply -f deployment.yaml
                         kubectl apply -f service.yaml
-                        kubectl set image deployment/amazon-app amazon-container=${IMAGE_NAME}:${IMAGE_TAG}
+
+                        kubectl set image deployment/amazon-app \
+                        amazon-container=${IMAGE_NAME}:${IMAGE_TAG}
+
                         kubectl rollout status deployment/amazon-app
                         kubectl get pods -o wide
                         kubectl get svc
@@ -123,36 +102,20 @@ spec:
         }
 
         stage('Confirmation Before Destroy') {
-            agent any
             steps {
-                input message: 'Application deployed successfully. Do you want to destroy it?', ok: 'Destroy'
+                input message: 'Deployment completed. Do you want to destroy it?', ok: 'Destroy'
             }
         }
 
         stage('Destroy Kubernetes Resources') {
-            agent {
-                kubernetes {
-                    cloud 'kubernetes'
-                    yaml '''
-apiVersion: v1
-kind: Pod
-spec:
-  serviceAccountName: jenkins
-  containers:
-  - name: kubectl
-    image: bitnami/kubectl:latest
-    command:
-    - cat
-    tty: true
-'''
-                }
-            }
             steps {
-                container('kubectl') {
-                    unstash 'source-code'
-
+                withCredentials([file(
+                    credentialsId: 'k8s-token',
+                    variable: 'KUBECONFIG_FILE'
+                )]) {
                     sh '''
-                        echo "Destroying Kubernetes resources"
+                        export KUBECONFIG=$KUBECONFIG_FILE
+
                         kubectl delete -f service.yaml --ignore-not-found=true
                         kubectl delete -f deployment.yaml --ignore-not-found=true
                         kubectl get pods
@@ -164,11 +127,10 @@ spec:
 
     post {
         always {
-            node {
-                echo "Running post actions"
-                archiveArtifacts artifacts: 'Amazon-Web/target/*.war', fingerprint: true, allowEmptyArchive: true
-                cleanWs()
-            }
+            archiveArtifacts artifacts: 'Amazon-Web/target/*.war',
+                             fingerprint: true,
+                             allowEmptyArchive: true
+            cleanWs()
         }
 
         success {
@@ -176,7 +138,7 @@ spec:
         }
 
         failure {
-            echo "Pipeline failed. Check Jenkins console logs."
+            echo "Pipeline failed. Check console output."
         }
     }
 }
