@@ -1,34 +1,39 @@
-cat > Jenkinsfile <<'EOF'
 pipeline {
     agent none
 
     environment {
-        ARTIFACT_NAME = "simple-app-${BUILD_NUMBER}.tar.gz"
-        JFROG_URL = "http://host.docker.internal:8082/artifactory"
+        ARTIFACT_NAME = "amazon-app-${BUILD_NUMBER}.tar.gz"
+        JFROG_URL = "http://192.168.116.128:8082/artifactory"
         JFROG_REPO = "libs-snapshot-local"
     }
 
     stages {
+        stage('Checkout') {
+            agent any
+            steps {
+                git branch: 'main', url: 'https://github.com/surajjp7/amazon-app.git'
+            }
+        }
 
-        stage('Stage 1 - Build using Docker Container Slave') {
+        stage('Build using Docker Container Slave') {
             agent {
                 docker {
-                    image 'alpine:latest'
+                    image 'node:18'
                     args '-u root'
                 }
             }
             steps {
                 sh '''
-                    echo "Running build inside Docker container slave"
-                    mkdir -p build
-                    echo "This is my build artifact from Jenkins build number ${BUILD_NUMBER}" > build/output.txt
-                    tar -czf ${ARTIFACT_NAME} build/
+                    echo "Building amazon-app inside Docker container agent"
+                    npm install
+                    npm run build || echo "No build script found, continuing"
+                    tar -czf ${ARTIFACT_NAME} .
                     ls -lh
                 '''
             }
         }
 
-        stage('Stage 2 - Use Docker Image as Agent') {
+        stage('Use Docker Image as Agent') {
             agent {
                 docker {
                     image 'ubuntu:22.04'
@@ -37,20 +42,18 @@ pipeline {
             }
             steps {
                 sh '''
-                    echo "This stage is running inside Ubuntu Docker image agent"
                     apt update -y
                     apt install curl -y
-                    echo "Docker image agent stage completed"
+                    echo "Running inside Ubuntu Docker image agent"
                 '''
             }
         }
 
-        stage('Stage 3 - Upload Artifact to JFrog') {
+        stage('Upload Artifact to JFrog') {
             agent any
             steps {
                 withCredentials([usernamePassword(credentialsId: 'jfrog-creds', usernameVariable: 'JFROG_USER', passwordVariable: 'JFROG_PASS')]) {
                     sh '''
-                        echo "Uploading artifact to JFrog Artifactory"
                         curl -u $JFROG_USER:$JFROG_PASS \
                         -T ${ARTIFACT_NAME} \
                         ${JFROG_URL}/${JFROG_REPO}/${ARTIFACT_NAME}
@@ -59,16 +62,13 @@ pipeline {
             }
         }
 
-        stage('Stage 4 - Create Kubernetes Pod using Jenkins K8s Plugin') {
+        stage('Deploy using Kubernetes Plugin Pod') {
             agent {
                 kubernetes {
                     cloud 'kubernetes'
                     yaml '''
 apiVersion: v1
 kind: Pod
-metadata:
-  labels:
-    app: jenkins-k8s-agent
 spec:
   containers:
   - name: kubectl
@@ -82,39 +82,27 @@ spec:
             steps {
                 container('kubectl') {
                     sh '''
-                        echo "Kubernetes plugin created this pod dynamically"
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
                         kubectl get pods
+                        kubectl get svc
                     '''
                 }
             }
         }
 
-        stage('Stage 5 - Deploy Application to Kubernetes') {
+        stage('Confirmation Before Destroy') {
             agent any
             steps {
-                sh '''
-                    echo "Deploying application to Kubernetes"
-                    kubectl apply -f deployment.yaml
-                    kubectl get pods
-                    kubectl get deployment
-                '''
+                input message: 'Deployment completed. Do you want to destroy it?', ok: 'Destroy'
             }
         }
 
-        stage('Stage 6 - Manual Confirmation') {
-            agent any
-            steps {
-                input message: 'Application deployed successfully. Do you want to destroy it now?', ok: 'Destroy'
-            }
-        }
-
-        stage('Stage 7 - Destroy Deployment') {
+        stage('Destroy Deployment') {
             agent any
             steps {
                 sh '''
-                    echo "Destroying Kubernetes deployment"
-                    kubectl delete -f deployment.yaml
-                    kubectl get pods
+                    kubectl delete -f k8s/deployment.yaml
                 '''
             }
         }
@@ -122,18 +110,14 @@ spec:
 
     post {
         always {
-            echo "Pipeline completed. Running cleanup/post actions."
             archiveArtifacts artifacts: '*.tar.gz', fingerprint: true
             cleanWs()
         }
-
         success {
-            echo "Pipeline completed successfully."
+            echo "Pipeline completed successfully"
         }
-
         failure {
-            echo "Pipeline failed. Please check logs."
+            echo "Pipeline failed"
         }
     }
 }
-EOF
