@@ -1,11 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: amazon-service
+  name: amazon-app-service
 spec:
-  type: LoadBalancer
+  type: NodePort
   selector:
-    app: amazon
+    app: amazon-app
   ports:
-    - port: 80
-      targetPort: 8080
+  - port: 80
+    targetPort: 80
+    nodePort: 30080
