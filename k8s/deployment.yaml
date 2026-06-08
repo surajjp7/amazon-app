@@ -3,18 +3,17 @@ kind: Deployment
 metadata:
   name: amazon-app
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: amazon
+      app: amazon-app
   template:
     metadata:
       labels:
-        app: amazon
+        app: amazon-app
     spec:
       containers:
-      - name: amazon-container
-        image: mydevopsacr.azurecr.io/amazon-app:latest
+      - name: amazon-app
+        image: nginx:latest
         ports:
-        - containerPort: 8080
-        imagePullPolicy: Always
+        - containerPort: 80
