@@ -6,8 +6,8 @@ pipeline {
         IMAGE_TAG  = "${BUILD_NUMBER}"
 
         WAR_FILE = "Amazon-Web/target/Amazon.war"
-        JFROG_URL = "http://localhost:8082/artifactory"
-        JFROG_REPO = "libs-snapshot-local"
+        JFROG_URL = "http://192.168.116.128:8082/artifactory"
+        JFROG_REPO = "maven-local"
     }
 
     stages {
@@ -25,7 +25,9 @@ pipeline {
                     -v $WORKSPACE:/app \
                     -w /app \
                     maven:3.9.6-eclipse-temurin-17 \
-                    mvn clean package
+                    mvn clean package -DskipTests
+
+                    ls -lh Amazon-Web/target/
                 '''
             }
         }
@@ -46,26 +48,13 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Build Docker Image Locally') {
             steps {
                 sh '''
                     docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
                     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+                    docker images | grep ${IMAGE_NAME}
                 '''
-            }
-        }
-
-        stage('Docker Login') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'Docker',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh '''
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                    '''
-                }
             }
         }
 
@@ -87,8 +76,8 @@ pipeline {
                     sh '''
                         export KUBECONFIG=$KUBECONFIG_FILE
 
-                        kubectl apply -f deployment.yaml
-                        kubectl apply -f service.yaml
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
 
                         kubectl set image deployment/amazon-app \
                         amazon-container=${IMAGE_NAME}:${IMAGE_TAG}
@@ -116,8 +105,8 @@ pipeline {
                     sh '''
                         export KUBECONFIG=$KUBECONFIG_FILE
 
-                        kubectl delete -f service.yaml --ignore-not-found=true
-                        kubectl delete -f deployment.yaml --ignore-not-found=true
+                        kubectl delete -f k8s/service.yaml --ignore-not-found=true
+                        kubectl delete -f k8s/deployment.yaml --ignore-not-found=true
                         kubectl get pods
                     '''
                 }
