@@ -4,7 +4,7 @@ pipeline {
     environment {
         ARTIFACT_NAME = "amazon-app-${BUILD_NUMBER}.tar.gz"
         JFROG_URL = "http://192.168.116.128:8082/artifactory"
-        JFROG_REPO = "libs-snapshot-local"
+        JFROG_REPO = "maven-local"
     }
 
     stages {
